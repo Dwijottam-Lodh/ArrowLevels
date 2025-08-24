@@ -74,9 +74,13 @@ class Player(pygame.sprite.Sprite):
 class Block(pygame.sprite.Sprite):
     def __init__(self, sprite=None, scale=(100,40), x=0, y=0, onclick=None, danger=False, spawn=False):
         super().__init__()
-        self.image = pygame.Surface(scale)
-        if sprite: self.image = pygame.image.load(sprite)
-        else: self.image.fill((100,200,100) if not danger else (200,50,50))
+        if isinstance(sprite, pygame.Surface):
+            self.image = sprite
+        elif sprite:
+            self.image = pygame.image.load(sprite)
+        else:
+            self.image = pygame.Surface(scale)
+            self.image.fill((100,200,100) if not danger else (200,50,50))
         self.rect = self.image.get_rect(topleft=(x,y))
         self.onclick, self.danger, self.spawn = onclick, danger, spawn
         _blocks.append(self)
