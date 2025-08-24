@@ -1,4 +1,4 @@
-import pygame, sys, json
+import pygame,sys, json
 
 # ================= Arrowlevels Mini Engine =================
 pygame.init()
@@ -146,6 +146,10 @@ def Load(file):
 # ---------------- Mainloop ----------------
 def mainloop(bg_color=(30,30,30)):
     running=True
+    credit=False
+    if not credit:
+        print(f"{"-"*71}\nHey!\nThis is based off Arrowlevels v1.1 by Dwijottam Lodh AKA GIGADOJO.\nWebsite: https://gigadojowashere.neocities.org\nArrowlevels Repo: https://github.com/Dwijottam-Lodh/ArrowLevels. (Fork freely, just add the MIT License included.)")
+        credit=True
     while running:
         keys = pygame.key.get_pressed()
         for e in pygame.event.get():
