@@ -10,7 +10,6 @@ _event_registry = {"playerdeath": [], "keydown": {}}
 GRAVITY = 0.5
 _moves = []
 _music_channel = None
-_held_keys = {}  # track held keys for repeated key triggers
 
 # ---------------- Player Class ----------------
 class Player(pygame.sprite.Sprite):
@@ -45,7 +44,7 @@ class Player(pygame.sprite.Sprite):
         self.vel = pygame.Vector2(0, 0)
         spawn_block = next((blk for blk in _blocks if getattr(blk, "spawn", False)), None)
         if spawn_block:
-            # Position player slightly above the spawn block to avoid overlap
+            # Position player slightly above spawn block to avoid overlap
             self.rect.midbottom = spawn_block.rect.midtop
         self.death_timer = 1  # skip next frame collision/movement
         for cmd in _event_registry["playerdeath"]:
@@ -54,7 +53,7 @@ class Player(pygame.sprite.Sprite):
     def update(self, keys):
         if self.death_timer > 0:
             self.death_timer -= 1
-            return
+            return  # skip movement & collisions this frame
 
         # Horizontal input
         if self.autoscroll:
@@ -84,9 +83,8 @@ class Player(pygame.sprite.Sprite):
                 elif self.vel.x < 0:
                     self.rect.left = b.rect.right
                 self.vel.x = 0
-                # Trigger oncollide if defined
-                if callable(getattr(b, "oncollide", None)):
-                    b.oncollide(self)
+                if getattr(b, "oncollide", None):
+                    b.oncollide()
 
         # --- Vertical collision ---
         self.rect.y += int(self.vel.y)
@@ -95,7 +93,7 @@ class Player(pygame.sprite.Sprite):
             if getattr(b, "passable", False):
                 continue
             if self.rect.colliderect(b.rect):
-                # Ladder logic: smooth ascend
+                # Ladder logic: smooth ascend through ladder
                 if getattr(b, "ladder", False) and self.vel.y < 0:
                     while self.rect.colliderect(b.rect):
                         self.rect.y -= 2
@@ -105,17 +103,16 @@ class Player(pygame.sprite.Sprite):
                     self._die()
                     return
 
-                if self.vel.y > 0:
+                if self.vel.y > 0:  # falling
                     self.rect.bottom = b.rect.top
                     self.vel.y = 0
                     self.grounded = True
-                elif self.vel.y < 0:
+                elif self.vel.y < 0:  # jumping into block
                     self.rect.top = b.rect.bottom
                     self.vel.y = 0
 
-                # Trigger oncollide if defined
-                if callable(getattr(b, "oncollide", None)):
-                    b.oncollide(self)
+                if getattr(b, "oncollide", None):
+                    b.oncollide()
 
 
 # ---------------- Block Class ----------------
@@ -178,16 +175,47 @@ def Music(file, loop=True):
     pygame.mixer.music.load(file)
     pygame.mixer.music.play(-1 if loop else 0)
 
-# ---------------- API ----------------
-def Player_(*a, **kw): return Player(*a, **kw)
-def Physics(gravity=0.5, **_): global GRAVITY; GRAVITY=gravity
-def Newblock(**kw): return Block(**kw)
-def on(event, command):
-    if event in _event_registry: _event_registry[event].append(command)
-def Forcepush(x_velocity=0, y_velocity=0):
-    for p in _players: p.vel += (x_velocity,y_velocity)
+# ---------------- Camera ----------------
+_active_camera = None
 
-# Click with optional repeat
+class Camera:
+    def __init__(self, target=None, target_player=True, xoffset=0, yoffset=0, zoom=1, active=True):
+        global _active_camera
+        self.target = target
+        self.target_player = target_player
+        self.xoffset = xoffset
+        self.yoffset = yoffset
+        self.zoom = zoom
+        self.active = active
+        if active:
+            if _active_camera:
+                _active_camera.active = False
+            _active_camera = self
+
+    def get_cam_pos(self):
+        if self.target_player and self.target in _players:
+            tx, ty = self.target.rect.center
+        elif self.target:
+            tx, ty = self.target.rect.center
+        else:
+            tx, ty = 0, 0
+        return tx - screen.get_width()/2 + self.xoffset, ty - screen.get_height()/2 + self.yoffset
+
+    def apply(self, rect):
+        cam_x, cam_y = self.get_cam_pos()
+        return pygame.Rect(
+            (rect.x - cam_x) * self.zoom,
+            (rect.y - cam_y) * self.zoom,
+            rect.width * self.zoom,
+            rect.height * self.zoom
+        )
+
+def Camera_(*a, **kw):
+    return Camera(*a, **kw)
+
+# ---------------- API ----------------
+_held_keys = {}
+
 def Click(key, command, repeat=False):
     if key not in _event_registry["keydown"]:
         _event_registry["keydown"][key] = []
@@ -200,6 +228,14 @@ def _update_held_keys(keys):
         if keys[key]:
             cmd()
 
+def Player_(*a, **kw): return Player(*a, **kw)
+def Physics(gravity=0.5, **_): global GRAVITY; GRAVITY=gravity
+def Newblock(**kw): return Block(**kw)
+def on(event, command):
+    if event in _event_registry: _event_registry[event].append(command)
+def Forcepush(x_velocity=0, y_velocity=0):
+    for p in _players: p.vel += (x_velocity,y_velocity)
+
 def Save(file,data):
     with open(file,"w") as f: json.dump(data,f,indent=4)
 
@@ -210,12 +246,13 @@ def Load(file):
     if "players" in globals_cfg: Player_(**globals_cfg["players"])
     for blk_cfg in data.get("blocks",{}).values(): Newblock(**blk_cfg)
 
+
 # ---------------- Mainloop ----------------
 def mainloop(bg_color=(30,30,30)):
     print("-"*71)
-    print("Hey!\nThis is based off Arrowlevels v1:1 by Dwijottam Lodh AKA GIGADOJO.")
+    print("Hey!\nThis is based off Arrowlevels v1:2 by Dwijottam Lodh AKA GIGADOJO.")
     print("Website: https://gigadojowashere.neocities.org")
-    print("Arrowlevels Repo: https://github.com/Dwijottam-Lodh/ArrowLevels (Fork freely, just add the MIT License included.)")
+    print("Arrowlevels Repo: https://github.com/Dwijottam-Lodh/ArrowLevels")
     running = True
     while running:
         keys = pygame.key.get_pressed()
@@ -228,13 +265,24 @@ def mainloop(bg_color=(30,30,30)):
             if e.type==pygame.KEYDOWN:
                 if e.key in _event_registry["keydown"]:
                     for cmd in _event_registry["keydown"][e.key]: cmd()
-
         _update_held_keys(keys)
         for p in _players: p.update(keys)
         _update_moves()
         screen.fill(bg_color)
-        for b in _blocks: screen.blit(b.image,b.rect)
-        for p in _players: screen.blit(p.image,p.rect)
+        for b in _blocks:
+            if _active_camera:
+                screen.blit(pygame.transform.scale(b.image,
+                    (int(b.rect.width*_active_camera.zoom), int(b.rect.height*_active_camera.zoom))),
+                    _active_camera.apply(b.rect))
+            else:
+                screen.blit(b.image, b.rect)
+        for p in _players:
+            if _active_camera:
+                screen.blit(pygame.transform.scale(p.image,
+                    (int(p.rect.width*_active_camera.zoom), int(p.rect.height*_active_camera.zoom))),
+                    _active_camera.apply(p.rect))
+            else:
+                screen.blit(p.image, p.rect)
         pygame.display.flip()
         clock.tick(60)
 
