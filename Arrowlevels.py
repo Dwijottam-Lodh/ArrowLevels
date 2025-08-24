@@ -1,4 +1,4 @@
-import pygame,sys, json
+import pygame, sys, json
 
 # ================= Arrowlevels Mini Engine =================
 pygame.init()
@@ -10,6 +10,7 @@ _event_registry = {"playerdeath": [], "keydown": {}}
 GRAVITY = 0.5
 _moves = []
 _music_channel = None
+_held_keys = {}  # track held keys for repeated key triggers
 
 # ---------------- Player Class ----------------
 class Player(pygame.sprite.Sprite):
@@ -30,15 +31,32 @@ class Player(pygame.sprite.Sprite):
 
         self.grounded = False
         self.dead = False
+        self.death_timer = 0  # frames to lock movement after death
 
         _players.append(self)
 
     def jump(self):
-        if self.grounded:
+        if self.grounded and self.death_timer == 0:
             self.vel.y = self.jump_acc
             self.grounded = False
 
+    def _die(self):
+        self.dead = True
+        self.vel = pygame.Vector2(0, 0)
+        spawn_block = next((blk for blk in _blocks if getattr(blk, "spawn", False)), None)
+        if spawn_block:
+            # Position player slightly above the spawn block to avoid overlap
+            self.rect.midbottom = spawn_block.rect.midtop
+        self.death_timer = 1  # skip next frame collision/movement
+        for cmd in _event_registry["playerdeath"]:
+            cmd()
+
     def update(self, keys):
+        if self.death_timer > 0:
+            self.death_timer -= 1
+            return
+
+        # Horizontal input
         if self.autoscroll:
             self.vel.x = self.autoscroll_speed
         else:
@@ -49,51 +67,90 @@ class Player(pygame.sprite.Sprite):
             else:
                 self.vel.x *= 0.8
 
+        # Apply gravity
         self.vel.y += GRAVITY
-        self.rect.x += int(self.vel.x)
-        self.rect.y += int(self.vel.y)
 
+        # --- Horizontal collision ---
+        self.rect.x += int(self.vel.x)
+        for b in _blocks:
+            if getattr(b, "passable", False):
+                continue
+            if self.rect.colliderect(b.rect):
+                if getattr(b, "danger", False):
+                    self._die()
+                    return
+                if self.vel.x > 0:
+                    self.rect.right = b.rect.left
+                elif self.vel.x < 0:
+                    self.rect.left = b.rect.right
+                self.vel.x = 0
+                # Trigger oncollide if defined
+                if callable(getattr(b, "oncollide", None)):
+                    b.oncollide(self)
+
+        # --- Vertical collision ---
+        self.rect.y += int(self.vel.y)
         self.grounded = False
         for b in _blocks:
+            if getattr(b, "passable", False):
+                continue
             if self.rect.colliderect(b.rect):
+                # Ladder logic: smooth ascend
+                if getattr(b, "ladder", False) and self.vel.y < 0:
+                    while self.rect.colliderect(b.rect):
+                        self.rect.y -= 2
+                    continue
+
+                if getattr(b, "danger", False):
+                    self._die()
+                    return
+
                 if self.vel.y > 0:
                     self.rect.bottom = b.rect.top
                     self.vel.y = 0
                     self.grounded = True
-                if getattr(b,"danger",False) and not self.dead:
-                    self.dead = True
-                    spawn_block = next((blk for blk in _blocks if getattr(blk,"spawn",False)), None)
-                    if spawn_block:
-                        self.rect.topleft = spawn_block.rect.topleft
-                        self.vel = pygame.Vector2(0,0)
-                        self.dead = False
-                    for cmd in _event_registry["playerdeath"]:
-                        cmd()
+                elif self.vel.y < 0:
+                    self.rect.top = b.rect.bottom
+                    self.vel.y = 0
+
+                # Trigger oncollide if defined
+                if callable(getattr(b, "oncollide", None)):
+                    b.oncollide(self)
+
 
 # ---------------- Block Class ----------------
 class Block(pygame.sprite.Sprite):
-    def __init__(self, sprite=None, scale=(100,40), x=0, y=0, onclick=None, danger=False, spawn=False):
+    def __init__(self, sprite=None, scale=(100, 40), x=0, y=0,
+                 onclick=None, oncollide=None, danger=False, spawn=False,
+                 passable=False, alpha=255, ladder=False):
         super().__init__()
         if isinstance(sprite, pygame.Surface):
-            self.image = sprite
+            self.image = sprite.copy()
         elif sprite:
             self.image = pygame.image.load(sprite)
         else:
-            self.image = pygame.Surface(scale)
-            self.image.fill((100,200,100) if not danger else (200,50,50))
-        self.rect = self.image.get_rect(topleft=(x,y))
-        self.onclick, self.danger, self.spawn = onclick, danger, spawn
+            self.image = pygame.Surface(scale, pygame.SRCALPHA)
+            color = (100,200,100) if not danger else (200,50,50)
+            self.image.fill((*color, alpha))
+
+        self.image.set_alpha(alpha)
+        self.rect = self.image.get_rect(topleft=(x, y))
+        self.onclick = onclick
+        self.oncollide = oncollide
+        self.danger = danger
+        self.spawn = spawn
+        self.passable = passable
+        self.ladder = ladder
+        self.alpha = alpha
+
         _blocks.append(self)
+
+
 # ---------------- Spike ----------------
 def Spike(scale=(40,40), color=(0,0,0)):
-    """
-    Returns a Pygame Surface with a black equilateral triangle (spike).
-    `scale` = (width, height)
-    `color` = RGB tuple
-    """
     surf = pygame.Surface(scale, pygame.SRCALPHA)
     w, h = scale
-    points = [(w//2, 0), (0, h), (w, h)]  # top-middle, bottom-left, bottom-right
+    points = [(w//2, 0), (0, h), (w, h)]
     pygame.draw.polygon(surf, color, points)
     return surf
 
@@ -112,7 +169,7 @@ def _update_moves():
         tgt.rect.x += step_x
         tgt.rect.y += step_y
         if (tgt.rect.x, tgt.rect.y) == pos:
-            mv["index"] = (idx+1)%len(mv["keyframes"])
+            mv["index"] = (idx+1) % len(mv["keyframes"])
 
 # ---------------- Music ----------------
 def Music(file, loop=True):
@@ -127,11 +184,21 @@ def Physics(gravity=0.5, **_): global GRAVITY; GRAVITY=gravity
 def Newblock(**kw): return Block(**kw)
 def on(event, command):
     if event in _event_registry: _event_registry[event].append(command)
-def Click(key, command):
-    if key not in _event_registry["keydown"]: _event_registry["keydown"][key]=[]
-    _event_registry["keydown"][key].append(command)
 def Forcepush(x_velocity=0, y_velocity=0):
     for p in _players: p.vel += (x_velocity,y_velocity)
+
+# Click with optional repeat
+def Click(key, command, repeat=False):
+    if key not in _event_registry["keydown"]:
+        _event_registry["keydown"][key] = []
+    _event_registry["keydown"][key].append(command)
+    if repeat:
+        _held_keys[key] = command
+
+def _update_held_keys(keys):
+    for key, cmd in _held_keys.items():
+        if keys[key]:
+            cmd()
 
 def Save(file,data):
     with open(file,"w") as f: json.dump(data,f,indent=4)
@@ -145,11 +212,11 @@ def Load(file):
 
 # ---------------- Mainloop ----------------
 def mainloop(bg_color=(30,30,30)):
-    running=True
-    credit=False
-    if not credit:
-        print(f"{"-"*71}\nHey!\nThis is based off Arrowlevels v1.1 by Dwijottam Lodh AKA GIGADOJO.\nWebsite: https://gigadojowashere.neocities.org\nArrowlevels Repo: https://github.com/Dwijottam-Lodh/ArrowLevels. (Fork freely, just add the MIT License included.)")
-        credit=True
+    print("-"*71)
+    print("Hey!\nThis is based off Arrowlevels v1:1 by Dwijottam Lodh AKA GIGADOJO.")
+    print("Website: https://gigadojowashere.neocities.org")
+    print("Arrowlevels Repo: https://github.com/Dwijottam-Lodh/ArrowLevels (Fork freely, just add the MIT License included.)")
+    running = True
     while running:
         keys = pygame.key.get_pressed()
         for e in pygame.event.get():
@@ -162,6 +229,7 @@ def mainloop(bg_color=(30,30,30)):
                 if e.key in _event_registry["keydown"]:
                     for cmd in _event_registry["keydown"][e.key]: cmd()
 
+        _update_held_keys(keys)
         for p in _players: p.update(keys)
         _update_moves()
         screen.fill(bg_color)
@@ -170,4 +238,5 @@ def mainloop(bg_color=(30,30,30)):
         pygame.display.flip()
         clock.tick(60)
 
-    pygame.quit(); sys.exit()
+    pygame.quit()
+    sys.exit()
